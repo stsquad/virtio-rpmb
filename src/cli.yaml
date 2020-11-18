@@ -1,0 +1,62 @@
+name: vhost-user-rpmb
+# TODO, work out if we can get this via the crate_version!() and crate_authors!() macros
+version: "0.1.0"
+author: "Alex Bennée <alex.bennee@linaro.org>"
+about: Serve a vhost-user-rpmb device.
+
+settings:
+    - ArgRequiredElseHelp
+
+args:
+  # Debug and Verbosity
+  - verbose:
+      long: verbose
+      short: v
+      takes_value: false
+      multiple: true
+      help: Set levels of verbosity
+  # Introspection
+  - print_cap:
+      long: print-capabilities
+      takes_value: false
+      help: Output to stdout the backend capabilities in JSON format and exit
+  # Connection to socket, either through socket-path or fd
+  - socket:
+      long: socket-path
+      value_name: FILE
+      takes_value: true
+      help: Location of vhost-user Unix domain socket, incompatible with --fd
+  - fd:
+      long: fd
+      value_name: INT
+      takes_value: true
+      help: Specify the file-descriptor of the backend, incompatible with --socket-path
+  # Backing store for flash device
+  - flash_path:
+      long: flash-path
+      value_name: FILE
+      takes_value: true
+      help: Location of raw flash image file
+  - counter:
+      long: initial-counter
+      value_name: INT
+      takes_value: true
+      help: Set initial value of write counter
+  # Persistent Key details (not required, but you can't persist a key without it)
+  - key_path:
+      long: key-path
+      value_name: FILE
+      takes_value: true
+      help: Location of persistent keyfile
+  - key_set:
+      long: key-set
+      takes_value: false
+      help: Is the key already programmed
+
+groups:
+  - required_args:
+      args:
+        - print_cap
+        - socket
+        - fd
+      required: true
