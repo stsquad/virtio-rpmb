@@ -9,4 +9,5 @@ license = "Apache-2.0"
 
 [dependencies]
 clap = { version = "2.33.3",  features = ["yaml"] }
+memmap = "0.6.2"
 vhostuser_rs = { git = "https://github.com/jiangliu/vhostuser_rs" }
