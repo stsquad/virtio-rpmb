@@ -3,3 +3,4 @@
  */
 
 pub mod rpmb;
+pub mod vhu_rpmb;

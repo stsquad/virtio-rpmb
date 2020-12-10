@@ -10,4 +10,11 @@ license = "Apache-2.0"
 [dependencies]
 clap = { version = "2.33.3",  features = ["yaml"] }
 memmap = "0.6.2"
-vhostuser_rs = { git = "https://github.com/jiangliu/vhostuser_rs" }
+epoll = ">=4.0.1"
+log = "0.4.6"
+virtio-bindings = { version = "0.1", features = ["virtio-v5_0_0"]}
+vhost_rs = { git = "https://github.com/rust-vmm/vhost", branch = "master", package = "vhost", features = ["vhost-user-slave"] }
+vhost-user-backend = { git = "https://github.com/rust-vmm/vhost-user-backend", branch = "master" }
+virtiofsd-rs = { git = "https://github.com/slp/virtiofsd-rs", branch = "main"}
+vm-memory = ">=0.3.0"
+vmm-sys-util = ">=0.4.0"
