@@ -91,6 +91,10 @@ impl VhostUserBackend for VhostUserRpmb {
         VhostUserProtocolFeatures::MQ | VhostUserProtocolFeatures::SLAVE_REQ
     }
 
+    fn get_config(&self, _offset: u32, _size: u32) -> Vec<u8> {
+        let config: Vec<u8> = vec![self.backend.get_capacity(), 1, 1];
+        config
+    }
     fn set_event_idx(&mut self, enabled: bool) {
         self.event_idx = enabled;
     }
