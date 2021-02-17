@@ -3,7 +3,6 @@
  *
  * This encapsulates all vhost user message handling.
  */
-
 use std::sync::{Arc, RwLock};
 use std::{convert, error, fmt, io};
 
@@ -20,9 +19,10 @@ use vm_memory::{GuestMemoryAtomic, GuestMemoryMmap};
 
 use crate::rpmb::RpmbBackend;
 
-type VhostUserRpmbResult<T> = std::result::Result<T, std::io::Error>;
+// type VhostUserRpmbResult<T> = std::result::Result<T, std::io::Error>;
 type VhostUserBackendResult<T> = std::result::Result<T, std::io::Error>;
 
+#[derive(Debug)]
 pub struct VhostUserRpmb {
     backend: RpmbBackend,
     event_idx: bool,
@@ -52,7 +52,7 @@ impl convert::From<Error> for io::Error {
 }
 
 // The device has been dropped.
-const KILL_EVENT: u16 = 2;
+// const KILL_EVENT: u16 = 2;
 const QUEUE_SIZE: usize = 1024;
 const NUM_QUEUES: usize = 1;
 
@@ -83,6 +83,7 @@ impl VhostUserBackend for VhostUserRpmb {
     }
 
     fn features(&self) -> u64 {
+        dbg!("features!");
         1 << VIRTIO_F_VERSION_1
             | 1 << VIRTIO_RING_F_INDIRECT_DESC
             | 1 << VIRTIO_RING_F_EVENT_IDX
@@ -90,14 +91,23 @@ impl VhostUserBackend for VhostUserRpmb {
     }
 
     fn protocol_features(&self) -> VhostUserProtocolFeatures {
+        dbg!("protocol features!");
         VhostUserProtocolFeatures::MQ | VhostUserProtocolFeatures::SLAVE_REQ
     }
 
     fn get_config(&self, _offset: u32, _size: u32) -> Vec<u8> {
         let config: Vec<u8> = vec![self.backend.get_capacity(), 1, 1];
+        dbg!("get_config: {}", &config);
         config
     }
+
+    // fn set_config(&mut self, _offset: u32, _buf: &[u8]) -> result::Result<(), io::Error> {
+    //     dbg!("set_config");
+    //     Ok(())
+    // }
+
     fn set_event_idx(&mut self, enabled: bool) {
+        dbg!("set_event_idx: {}", enabled);
         self.event_idx = enabled;
     }
 
@@ -106,19 +116,24 @@ impl VhostUserBackend for VhostUserRpmb {
         mem: GuestMemoryAtomic<GuestMemoryMmap>,
     ) -> VhostUserBackendResult<()> {
         self.mem = Some(mem);
+        dbg!("in update_memory");
         Ok(())
     }
 
     fn handle_event(
         &self,
-        device_event: u16,
+        _device_event: u16,
         evset: epoll::Events,
-        vrings: &[Arc<RwLock<Vring>>],
+        _vrings: &[Arc<RwLock<Vring>>],
         _thread_id: usize,
     ) -> VhostUserBackendResult<bool> {
+        dbg!(_device_event);
+        dbg!(evset);
+
         if evset != epoll::Events::EPOLLIN {
             return Err(Error::HandleEventNotEpollIn.into());
         }
+
 
         Ok(false)
     }

@@ -9,14 +9,14 @@
 extern crate clap;
 use clap::App;
 
-use log::{debug, error, info};
+use log::{error};
 
 use std::process::exit;
 use std::path::Path;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
-use vhost_user_backend::{VhostUserBackend, VhostUserDaemon, Vring};
-use vhost_rs::vhost_user::{Listener};
+use vhost_user_backend::{VhostUserDaemon};
+use vhost::vhost_user::{Listener};
 use vhost_user_rpmb::rpmb::RpmbBackend;
 use vhost_user_rpmb::vhu_rpmb::VhostUserRpmb;
 
@@ -60,6 +60,8 @@ fn main() {
         VhostUserRpmb::new(rpmb).unwrap(),
     ));
 
+    dbg!(&vuh_rpmb);
+
     let mut daemon =
         VhostUserDaemon::new(String::from("vhost-user-rpmb-backend"), vuh_rpmb.clone()).unwrap();
 
@@ -67,6 +69,8 @@ fn main() {
         error!("Failed to start daemon: {:?}", e);
         exit(-1);
     }
+
+    dbg!("Daemon started");
 
     if let Err(e) = daemon.wait() {
         error!("Waiting for daemon failed: {:?}", e);
