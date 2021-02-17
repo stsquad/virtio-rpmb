@@ -53,6 +53,8 @@ impl convert::From<Error> for io::Error {
 
 // The device has been dropped.
 const KILL_EVENT: u16 = 2;
+const QUEUE_SIZE: usize = 1024;
+const NUM_QUEUES: usize = 1;
 
 /*
  * Core VhostUserRpmb methods
@@ -73,11 +75,11 @@ impl VhostUserRpmb {
  */
 impl VhostUserBackend for VhostUserRpmb {
     fn num_queues(&self) -> usize {
-        1
+        NUM_QUEUES
     }
 
     fn max_queue_size(&self) -> usize {
-        5
+        QUEUE_SIZE
     }
 
     fn features(&self) -> u64 {
