@@ -33,7 +33,7 @@ fn main() {
 
     let flash_path = Path::new(cmd_args.value_of("flash_path").unwrap());
     if !flash_path.exists() {
-            error!("Please specify a valid --flash-path for the \
+            println!("Please specify a valid --flash-path for the \
                       flash image");
             exit(1);
     }
@@ -41,7 +41,7 @@ fn main() {
     let rpmb = match RpmbBackend::new(&flash_path) {
         Ok(s) => s,
         Err(e) => {
-            error!("Can't open flash image {}: {}", flash_path.display(), e);
+            println!("Can't open flash image {}: {}", flash_path.display(), e);
             exit(-1);
         }
     };
