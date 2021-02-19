@@ -15,6 +15,7 @@ use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
 use vm_memory::{GuestMemoryAtomic, GuestMemoryMmap};
+use vm_virtio::Queue;
 //use vmm_sys_util::eventfd::EventFd;
 
 use crate::rpmb::RpmbBackend;
@@ -57,6 +58,51 @@ const QUEUE_SIZE: usize = 1024;
 const NUM_QUEUES: usize = 1;
 
 /*
+ * Rpmb Message Parsing
+ */
+/*
+#define VIRTIO_RPMB_REQ_PROGRAM_KEY        0x0001
+#define VIRTIO_RPMB_REQ_GET_WRITE_COUNTER  0x0002
+#define VIRTIO_RPMB_REQ_DATA_WRITE         0x0003
+#define VIRTIO_RPMB_REQ_DATA_READ          0x0004
+#define VIRTIO_RPMB_REQ_RESULT_READ        0x0005
+*/
+pub const VIRTIO_RPMB_REQ_PROGRAM_KEY: u32 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RequestType {
+    ProgramKey,
+    Unsupported(u32),
+}
+
+// pub fn request_type(
+//     mem: &GuestMemoryMmap,
+//     desc_addr: GuestAddress,
+// ) -> Result<RequestType, Error> {
+//     let type_ = mem.read_obj(desc_addr).map_err(Error::GuestMemory)?;
+//     match type_ {
+//         VIRTIO_RPMB_REQ_PROGRAM_KEY => Ok(RequestType::ProgramKey),
+//         t => Ok(RequestType::Unsupported(t)),
+//     }
+// }
+
+/*
+struct virtio_rpmb_frame {
+    uint8_t stuff[196];
+    uint8_t key_mac[RPMB_KEY_MAC_SIZE];
+    uint8_t data[RPMB_BLOCK_SIZE];
+    uint8_t nonce[16];
+    /* remaining fields are big-endian */
+    uint32_t write_counter;
+    uint16_t address;
+    uint16_t block_count;
+    uint16_t result;
+    uint16_t req_resp;
+} __attribute__((packed));
+*/
+
+
+/*
  * Core VhostUserRpmb methods
  */
 impl VhostUserRpmb {
@@ -68,6 +114,19 @@ impl VhostUserRpmb {
                mem: None
            })
     }
+
+    /*
+     * Process the messages in the vring and dispatch replies
+     */
+    fn process_queue(
+        &self,
+        _queue: &mut Queue<GuestMemoryAtomic<GuestMemoryMmap>>,
+        _vring_lock: Arc<RwLock<Vring>>,
+    ) -> Result<bool, std::io::Error> {
+        dbg!("process_queue");
+        Ok(true)
+    }
+
 }
 
 /*
@@ -106,7 +165,7 @@ impl VhostUserBackend for VhostUserRpmb {
 
     fn get_config(&self, _offset: u32, _size: u32) -> Vec<u8> {
         let config: Vec<u8> = vec![self.backend.get_capacity(), 1, 1];
-        dbg!("get_config: {}", &config);
+        dbg!(&config);
         config
     }
 
@@ -116,34 +175,42 @@ impl VhostUserBackend for VhostUserRpmb {
     // }
 
     fn set_event_idx(&mut self, enabled: bool) {
-        dbg!("set_event_idx: {}", enabled);
-        self.event_idx = enabled;
+        dbg!(self.event_idx = enabled);
     }
 
     fn update_memory(
         &mut self,
         mem: GuestMemoryAtomic<GuestMemoryMmap>,
     ) -> VhostUserBackendResult<()> {
-        self.mem = Some(mem);
-        dbg!("in update_memory");
+        dbg!(self.mem = Some(mem));
         Ok(())
     }
 
     fn handle_event(
         &self,
-        _device_event: u16,
+        device_event: u16,
         evset: epoll::Events,
-        _vrings: &[Arc<RwLock<Vring>>],
+        vrings: &[Arc<RwLock<Vring>>],
         _thread_id: usize,
     ) -> VhostUserBackendResult<bool> {
-        dbg!(_device_event);
+        dbg!(device_event);
         dbg!(evset);
 
         if evset != epoll::Events::EPOLLIN {
             return Err(Error::HandleEventNotEpollIn.into());
         }
 
-
+        match device_event {
+            0 => {
+                let mut vring = vrings[0].write().unwrap();
+                let queue = vring.mut_queue();
+                self.process_queue(queue, vrings[0].clone())?;
+            }
+            _ => {
+                dbg!("unhandled device_event:", device_event);
+                return Err(Error::HandleEventUnknownEvent.into());
+            }
+        }
         Ok(false)
     }
 }
