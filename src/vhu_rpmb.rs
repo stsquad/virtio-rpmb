@@ -9,7 +9,7 @@ use std::{convert, error, fmt, io};
 use vhost::vhost_user::message::*;
 use vhost_user_backend::{VhostUserBackend, Vring};
 use virtio_bindings::bindings::virtio_net::{
-    VIRTIO_F_VERSION_1
+    VIRTIO_F_VERSION_1, VIRTIO_F_NOTIFY_ON_EMPTY
 };
 use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
@@ -83,16 +83,25 @@ impl VhostUserBackend for VhostUserRpmb {
     }
 
     fn features(&self) -> u64 {
-        dbg!("features!");
-        1 << VIRTIO_F_VERSION_1
+        /* this set matches the current libvhost defaults except VHOST_F_LOG_ALL*/
+        let feat: u64 = 1 << VIRTIO_F_VERSION_1
+            | 1 << VIRTIO_F_NOTIFY_ON_EMPTY
             | 1 << VIRTIO_RING_F_INDIRECT_DESC
             | 1 << VIRTIO_RING_F_EVENT_IDX
-            | VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits()
+            | VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits();
+        dbg!(format!("{:#018x}", &feat));
+        dbg!(format!("{:#018x}", VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits()));
+        feat
     }
 
     fn protocol_features(&self) -> VhostUserProtocolFeatures {
-        dbg!("protocol features!");
-        VhostUserProtocolFeatures::MQ | VhostUserProtocolFeatures::SLAVE_REQ
+        let pfeat: VhostUserProtocolFeatures = VhostUserProtocolFeatures::REPLY_ACK
+            | VhostUserProtocolFeatures::CONFIG
+            | VhostUserProtocolFeatures::RESET_DEVICE
+            | VhostUserProtocolFeatures::STATUS
+            | VhostUserProtocolFeatures::MQ;
+        dbg!(pfeat);
+        pfeat
     }
 
     fn get_config(&self, _offset: u32, _size: u32) -> Vec<u8> {
