@@ -3,6 +3,8 @@
  *
  * This encapsulates all vhost user message handling.
  */
+use crate::rpmb::*;
+use std::mem::size_of;
 use std::sync::{Arc, RwLock};
 use std::{convert, error, fmt, io};
 
@@ -14,7 +16,7 @@ use virtio_bindings::bindings::virtio_net::{
 use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
-use vm_memory::{GuestMemoryAtomic, GuestMemoryMmap};
+use vm_memory::{Be16, Be32, Bytes, ByteValued, GuestMemoryAtomic, GuestMemoryMmap};
 //use vm_virtio::Queue;
 //use vmm_sys_util::eventfd::EventFd;
 
@@ -83,12 +85,16 @@ const NUM_QUEUES: usize = 1;
 #define VIRTIO_RPMB_REQ_DATA_READ          0x0004
 #define VIRTIO_RPMB_REQ_RESULT_READ        0x0005
 */
-pub const VIRTIO_RPMB_REQ_PROGRAM_KEY: u32 = 1;
+pub const VIRTIO_RPMB_REQ_PROGRAM_KEY: u16 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RequestType {
     ProgramKey,
     Unsupported(u32),
+}
+
+enum RequestResponse {
+    NoResponse,
 }
 
 // pub fn request_type(
@@ -102,19 +108,43 @@ pub enum RequestType {
 //     }
 // }
 
-// pub struct VirtIORPMBFrame {
-//     pub stuff: [u8, 196],
-    // pub key_mac[RPMB_KEY_MAC_SIZE]: u8,
-    // uint8_t data[RPMB_BLOCK_SIZE];
-    // uint8_t nonce[16];
-    // /* remaining fields are big-endian */
-    // uint32_t write_counter;
-    // uint16_t address;
-    // uint16_t block_count;
-    // uint16_t result;
-    // uint16_t req_resp;
-// } __attribute__((packed));
+#[derive(Copy, Clone)]
+#[repr(C, packed)]
+struct VirtIORPMBFrame {
+    stuff: [u8; 196],
+    key_mac: [u8; RPMB_KEY_MAC_SIZE],
+    data: [u8; RPMB_BLOCK_SIZE],
+    nonce: [u8; 16],
+    write_counter: Be32,
+    address: Be16,
+    block_count: Be16,
+    result: Be16,
+    req_resp: Be16
+}
 
+/*
+ * "Default is not implemented for arrays of length > 32
+ * for annoying backwards compatibility reasons" - so we must do it
+ * ourselves for the frame array.
+ */
+
+impl Default for VirtIORPMBFrame {
+    fn default() -> Self {
+        VirtIORPMBFrame {
+            stuff: [0; 196],
+            key_mac: [0; RPMB_KEY_MAC_SIZE],
+            data: [0; RPMB_BLOCK_SIZE],
+            nonce: [0; 16],
+            write_counter: From::from(0),
+            address: From::from(0),
+            block_count: From::from(0),
+            result: From::from(0),
+            req_resp: From::from(0)
+        }
+    }
+}
+
+unsafe impl ByteValued for VirtIORPMBFrame {}
 
 /*
  * Core VhostUserRpmb methods
@@ -143,6 +173,57 @@ impl VhostUserRpmb {
 
         if requests.is_empty() {
             return Ok(true);
+        }
+
+        // Iterate over each request and handle it.
+        for desc_chain in requests.clone() {
+            let descriptors: Vec<_> = desc_chain.clone().collect();
+
+            dbg!(&descriptors);
+
+            if descriptors.len() != 3 {
+                return Err(Error::UnexpectedDescriptorCount);
+            }
+
+            let desc_out_hdr = descriptors[0];
+            if desc_out_hdr.is_write_only() {
+                return Err(Error::UnexpectedWriteOnlyDescriptor);
+            }
+
+            if desc_out_hdr.len() as usize != size_of::<VirtIORPMBFrame>() {
+                return Err(Error::UnexpectedDescriptorSize);
+            }
+
+            let desc_buf = descriptors[1];
+            if desc_buf.len() == 0 {
+                return Err(Error::UnexpectedDescriptorSize);
+            }
+
+            let desc_in_hdr = descriptors[2];
+            if !desc_in_hdr.is_write_only() {
+                return Err(Error::UnexpectedReadDescriptor);
+            }
+
+            if desc_in_hdr.len() as usize != size_of::<VirtIORPMBFrame>() {
+                return Err(Error::UnexpectedDescriptorSize);
+            }
+
+            /* Convert the descriptor into something we can work
+             * with */
+            let out_hdr = desc_chain
+                .memory()
+                .read_obj::<VirtIORPMBFrame>(desc_out_hdr.addr())
+                .map_err(|_| Error::DescriptorReadFailed)?;
+
+            let res = match out_hdr.req_resp.to_native() {
+                VIRTIO_RPMB_REQ_PROGRAM_KEY => {
+                    NoResponse
+                }
+                _ => {
+                    NoResponse
+                }
+            };
+
         }
 
         Ok(true)

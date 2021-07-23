@@ -16,6 +16,10 @@ const KB: u64 = 1024;
 const UNIT_128KB: u64 = KB * 128;
 const MAX_RPMB_SIZE: u64 = UNIT_128KB * 128;
 
+pub const RPMB_KEY_MAC_SIZE: usize = 32;
+pub const RPMB_BLOCK_SIZE: usize = 256;
+
+
 #[derive(Debug)]
 pub struct RpmbBackend {
     image: File,
