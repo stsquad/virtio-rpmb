@@ -20,7 +20,7 @@ use vhost::vhost_user::{Listener};
 use vhost_user_rpmb::rpmb::RpmbBackend;
 use vhost_user_rpmb::vhu_rpmb::VhostUserRpmb;
 
-fn main() {
+fn main() -> Result<(), String> {
     let yaml = load_yaml!("cli.yaml");
     let cmd_args = App::from_yaml(yaml).get_matches();
 
@@ -56,23 +56,13 @@ fn main() {
 
     let listener = Listener::new(socket, true).unwrap();
 
-    let vuh_rpmb = Arc::new(RwLock::new(
-        VhostUserRpmb::new(rpmb).unwrap(),
-    ));
-
-    dbg!(&vuh_rpmb);
+    let backend = Arc::new(RwLock::new(VhostUserRpmb::new(rpmb).unwrap()));
 
     let mut daemon =
-        VhostUserDaemon::new(String::from("vhost-user-rpmb-backend"), vuh_rpmb.clone()).unwrap();
+        VhostUserDaemon::new(String::from("vhost-user-rpmb-backend"), backend.clone()).unwrap();
 
-    if let Err(e) = daemon.start(listener) {
-        error!("Failed to start daemon: {:?}", e);
-        exit(-1);
-    }
+    daemon.start(listener).unwrap();
+    daemon.wait().unwrap();
 
-    dbg!("Daemon started");
-
-    if let Err(e) = daemon.wait() {
-        error!("Waiting for daemon failed: {:?}", e);
-    }
+    Ok(())
 }

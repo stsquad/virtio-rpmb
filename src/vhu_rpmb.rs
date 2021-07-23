@@ -15,41 +15,57 @@ use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
 use vm_memory::{GuestMemoryAtomic, GuestMemoryMmap};
-use vm_virtio::Queue;
+//use vm_virtio::Queue;
 //use vmm_sys_util::eventfd::EventFd;
 
 use crate::rpmb::RpmbBackend;
 
-// type VhostUserRpmbResult<T> = std::result::Result<T, std::io::Error>;
+type Result<T> = std::result::Result<T, Error>;
 type VhostUserBackendResult<T> = std::result::Result<T, std::io::Error>;
+
+#[derive(Debug)]
+/// Errors related to vhost-user-rpmb daemon.
+pub enum Error {
+    /// Failed to handle event other than input event.
+    HandleEventNotEpollIn,
+    /// Failed to handle unknown event.
+    HandleEventUnknownEvent,
+    /// Guest gave us a write only descriptor that protocol says to read from.
+    UnexpectedWriteOnlyDescriptor,
+    /// Guest gave us a readable descriptor that protocol says to only write to.
+    UnexpectedReadDescriptor,
+    /// Invalid descriptor count
+    UnexpectedDescriptorCount,
+    /// Invalid descriptor
+    UnexpectedDescriptorSize,
+    /// Descriptor not found
+    DescriptorNotFound,
+    /// Descriptor read failed
+    DescriptorReadFailed,
+    /// Descriptor write failed
+    DescriptorWriteFailed,
+    /// Descriptor send failed
+    DescriptorSendFailed,
+}
+impl error::Error for Error {}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "vhost-device-i2c error: {:?}", self)
+    }
+}
+
+impl convert::From<Error> for io::Error {
+    fn from(e: Error) -> Self {
+        io::Error::new(io::ErrorKind::Other, e)
+    }
+}
 
 #[derive(Debug)]
 pub struct VhostUserRpmb {
     backend: RpmbBackend,
     event_idx: bool,
     mem: Option<GuestMemoryAtomic<GuestMemoryMmap>>
-}
-
-#[derive(Debug)]
-enum Error {
-    /// Failed to handle event other than input event.
-    HandleEventNotEpollIn,
-    /// Failed to handle unknown event.
-    HandleEventUnknownEvent,
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "vhost-user-rpmb error: {:?}", self)
-    }
-}
-
-impl error::Error for Error {}
-
-impl convert::From<Error> for io::Error {
-    fn from(e: Error) -> Self {
-        io::Error::new(io::ErrorKind::Other, e)
-    }
 }
 
 // The device has been dropped.
@@ -86,27 +102,25 @@ pub enum RequestType {
 //     }
 // }
 
-/*
-struct virtio_rpmb_frame {
-    uint8_t stuff[196];
-    uint8_t key_mac[RPMB_KEY_MAC_SIZE];
-    uint8_t data[RPMB_BLOCK_SIZE];
-    uint8_t nonce[16];
-    /* remaining fields are big-endian */
-    uint32_t write_counter;
-    uint16_t address;
-    uint16_t block_count;
-    uint16_t result;
-    uint16_t req_resp;
-} __attribute__((packed));
-*/
+// pub struct VirtIORPMBFrame {
+//     pub stuff: [u8, 196],
+    // pub key_mac[RPMB_KEY_MAC_SIZE]: u8,
+    // uint8_t data[RPMB_BLOCK_SIZE];
+    // uint8_t nonce[16];
+    // /* remaining fields are big-endian */
+    // uint32_t write_counter;
+    // uint16_t address;
+    // uint16_t block_count;
+    // uint16_t result;
+    // uint16_t req_resp;
+// } __attribute__((packed));
 
 
 /*
  * Core VhostUserRpmb methods
  */
 impl VhostUserRpmb {
-    pub fn new(backend: RpmbBackend) -> Result<Self, std::io::Error> {
+    pub fn new(backend: RpmbBackend) -> Result<Self> {
         Ok(VhostUserRpmb
            {
                backend: backend,
@@ -118,12 +132,19 @@ impl VhostUserRpmb {
     /*
      * Process the messages in the vring and dispatch replies
      */
-    fn process_queue(
-        &self,
-        _queue: &mut Queue<GuestMemoryAtomic<GuestMemoryMmap>>,
-        _vring_lock: Arc<RwLock<Vring>>,
-    ) -> Result<bool, std::io::Error> {
-        dbg!("process_queue");
+    fn process_queue(&self, vring: &mut Vring) -> Result<bool> {
+        // let mut reqs: Vec<VirtIORPMBFrame> = Vec::new();
+
+        let requests: Vec<_> = vring
+            .mut_queue()
+            .iter()
+            .map_err(|_| Error::DescriptorNotFound)?
+            .collect();
+
+        if requests.is_empty() {
+            return Ok(true);
+        }
+
         Ok(true)
     }
 
@@ -203,8 +224,24 @@ impl VhostUserBackend for VhostUserRpmb {
         match device_event {
             0 => {
                 let mut vring = vrings[0].write().unwrap();
-                let queue = vring.mut_queue();
-                self.process_queue(queue, vrings[0].clone())?;
+
+                if self.event_idx {
+                    // vm-virtio's Queue implementation only checks avail_index
+                    // once, so to properly support EVENT_IDX we need to keep
+                    // calling process_queue() until it stops finding new
+                    // requests on the queue.
+                    loop {
+                        vring.mut_queue().disable_notification().unwrap();
+
+                        self.process_queue(&mut vring)?;
+                        if !vring.mut_queue().enable_notification().unwrap() {
+                            break;
+                        }
+                    }
+                } else {
+                    // Without EVENT_IDX, a single call is enough.
+                    self.process_queue(&mut vring)?;
+                }
             }
             _ => {
                 dbg!("unhandled device_event:", device_event);
