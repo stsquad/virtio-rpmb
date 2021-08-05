@@ -7,6 +7,8 @@ use crate::rpmb::*;
 use std::mem::size_of;
 use std::sync::{Arc, RwLock};
 use std::{convert, error, fmt, io};
+use core::fmt::Debug;
+use arrayvec::ArrayVec;
 
 use vhost::vhost_user::message::*;
 use vhost_user_backend::{VhostUserBackend, Vring};
@@ -93,8 +95,28 @@ pub enum RequestType {
     Unsupported(u32),
 }
 
+// #define VIRTIO_RPMB_RES_OK                     0x0000
+// w
+// #define VIRTIO_RPMB_RES_AUTH_FAILURE           0x0002
+// #define VIRTIO_RPMB_RES_COUNT_FAILURE          0x0003
+// #define VIRTIO_RPMB_RES_ADDR_FAILURE           0x0004
+// #define VIRTIO_RPMB_RES_WRITE_FAILURE          0x0005
+// #define VIRTIO_RPMB_RES_READ_FAILURE           0x0006
+// #define VIRTIO_RPMB_RES_NO_AUTH_KEY            0x0007
+// #define VIRTIO_RPMB_RES_WRITE_COUNTER_EXPIRED  0x0080
+pub const VIRTIO_RPMB_RES_OK: u16 = 0x0000;
+pub const VIRTIO_RPMB_RES_GENERAL_FAILURE: u16 = 0x0001;
+pub const VIRTIO_RPMB_RES_WRITE_FAILURE: u16 = 0x0005;
+
+pub enum RequestResultType {
+    Ok,
+    GeneralFailure
+}
+
+#[derive(Debug)]
 enum RequestResponse {
     NoResponse,
+    Response(VirtIORPMBFrame)
 }
 
 // pub fn request_type(
@@ -144,7 +166,32 @@ impl Default for VirtIORPMBFrame {
     }
 }
 
+impl Debug for VirtIORPMBFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VirtIORPMBFrame")
+         .field("req_resp", &self.req_resp)
+         .finish()
+    }
+}
+
 unsafe impl ByteValued for VirtIORPMBFrame {}
+
+/* Implement some frame builders for sending our results back */
+impl VirtIORPMBFrame {
+    fn result(res: u16) -> Self {
+        VirtIORPMBFrame {
+            stuff: [0; 196],
+            key_mac: [0; RPMB_KEY_MAC_SIZE],
+            data: [0; RPMB_BLOCK_SIZE],
+            nonce: [0; 16],
+            write_counter: From::from(0),
+            address: From::from(0),
+            block_count: From::from(0),
+            result: From::from(0),
+            req_resp: From::from(res)
+        }
+    }
+}
 
 /*
  * Core VhostUserRpmb methods
@@ -153,12 +200,30 @@ impl VhostUserRpmb {
     pub fn new(backend: RpmbBackend) -> Result<Self> {
         Ok(VhostUserRpmb
            {
-               backend: backend,
+               backend,
                event_idx: false,
                mem: None
            })
     }
 
+    fn program_key(self, frame: VirtIORPMBFrame) -> RequestResponse {
+        let resp;
+
+        resp = if frame.block_count.to_native() != 1 {
+           VIRTIO_RPMB_RES_GENERAL_FAILURE
+        } else {
+            match self.backend.program_key(ArrayVec::from(frame.key_mac)) {
+                Ok(_) => {
+                    VIRTIO_RPMB_RES_OK
+                }
+                Err(_) => {
+                    VIRTIO_RPMB_RES_WRITE_FAILURE
+                }
+            }
+        };
+        RequestResponse::Response(VirtIORPMBFrame::result(resp))
+    }
+    
     /*
      * Process the messages in the vring and dispatch replies
      */
@@ -215,14 +280,19 @@ impl VhostUserRpmb {
                 .read_obj::<VirtIORPMBFrame>(desc_out_hdr.addr())
                 .map_err(|_| Error::DescriptorReadFailed)?;
 
-            let res = match out_hdr.req_resp.to_native() {
+            dbg!(out_hdr);
+            dbg!(out_hdr.req_resp.to_native());
+
+            let res: RequestResponse = match out_hdr.req_resp.to_native() {
                 VIRTIO_RPMB_REQ_PROGRAM_KEY => {
-                    NoResponse
+                    self.program_key(out_hdr)
                 }
                 _ => {
-                    NoResponse
+                    RequestResponse::NoResponse
                 }
             };
+
+            dbg!(res);
 
         }
 
