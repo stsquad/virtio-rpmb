@@ -292,8 +292,37 @@ impl VhostUserRpmb {
                 }
             };
 
-            dbg!(res);
+            dbg!(&res);
 
+            let len: u32 = match res {
+                RequestResponse::Response(frame) => {
+                    let result_buf = descriptors[1];
+
+                    desc_chain
+                        .memory()
+                        .write_obj::<VirtIORPMBFrame>(frame, result_buf.addr())
+                        .map_err(|_| Error::DescriptorWriteFailed)?;
+
+                    size_of::<VirtIORPMBFrame>() as u32
+                }
+                _ => {
+                    dbg!("no response needed");
+                    0
+                }
+            };
+
+            if vring
+                .mut_queue()
+                .add_used(desc_chain.head_index(), len)
+                .is_err()
+            {
+                println!("Couldn't return used descriptors to the ring");
+            }
+
+            // Send notification once all the requests are processed
+            vring
+                .signal_used_queue()
+                .map_err(|_| Error::DescriptorSendFailed)?;
         }
 
         Ok(true)
