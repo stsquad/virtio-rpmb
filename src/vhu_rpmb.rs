@@ -206,7 +206,7 @@ impl VhostUserRpmb {
            })
     }
 
-    fn program_key(self, frame: VirtIORPMBFrame) -> RequestResponse {
+    fn program_key(&self, frame: VirtIORPMBFrame) -> RequestResponse {
         let resp;
 
         resp = if frame.block_count.to_native() != 1 {

@@ -10,9 +10,9 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::{Result, Error, ErrorKind};
 use std::convert::TryFrom;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 use memmap::{MmapMut, MmapOptions};
-use arrayvec::{ArrayVec};
+use arrayvec::ArrayVec;
 
 const KB: u64 = 1024;
 const UNIT_128KB: u64 = KB * 128;
@@ -67,7 +67,7 @@ pub struct RpmbBackend {
     image: File,
     mmap: MmapMut,
     capacity: u8,
-    state: Arc<RwLock<RpmbMutableState>>
+    state: RwLock<RpmbMutableState>
 }
 
 impl RpmbBackend {
@@ -89,7 +89,7 @@ impl RpmbBackend {
             .map_err(|_e| Error::new(ErrorKind::InvalidData, "More
             capacity than can be accessed!"))?;
 
-        let state = Arc::new(RwLock::new(RpmbMutableState::new().unwrap()));
+        let state = RwLock::new(RpmbMutableState::new().unwrap());
 
         Ok(RpmbBackend {
             image,
@@ -104,7 +104,7 @@ impl RpmbBackend {
     }
 
     pub fn program_key(&self, key: ArrayVec<u8, RPMB_KEY_MAC_SIZE>) -> std::result::Result<(), KeyError> {
-        let mut writeable = self.backend.
-        writeable.program_key(key)
+        let result =  self.state.write().unwrap().program_key(key);
+        return result;
     }
 }
