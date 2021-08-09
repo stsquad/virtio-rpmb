@@ -87,7 +87,8 @@ const NUM_QUEUES: usize = 1;
 #define VIRTIO_RPMB_REQ_DATA_READ          0x0004
 #define VIRTIO_RPMB_REQ_RESULT_READ        0x0005
 */
-pub const VIRTIO_RPMB_REQ_PROGRAM_KEY: u16 = 1;
+pub const VIRTIO_RPMB_REQ_PROGRAM_KEY: u16 = 0x001;
+pub const VIRTIO_RPMB_RESP_PROGRAM_KEY: u16 = 0x100;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RequestType {
@@ -178,7 +179,7 @@ unsafe impl ByteValued for VirtIORPMBFrame {}
 
 /* Implement some frame builders for sending our results back */
 impl VirtIORPMBFrame {
-    fn result(res: u16) -> Self {
+    fn result(response:u16, result: u16) -> Self {
         VirtIORPMBFrame {
             stuff: [0; 196],
             key_mac: [0; RPMB_KEY_MAC_SIZE],
@@ -187,8 +188,8 @@ impl VirtIORPMBFrame {
             write_counter: From::from(0),
             address: From::from(0),
             block_count: From::from(0),
-            result: From::from(0),
-            req_resp: From::from(res)
+            result: From::from(result),
+            req_resp: From::from(response)
         }
     }
 }
@@ -207,9 +208,10 @@ impl VhostUserRpmb {
     }
 
     fn program_key(&self, frame: VirtIORPMBFrame) -> RequestResponse {
-        let resp;
+        let response = VIRTIO_RPMB_RESP_PROGRAM_KEY;
+        let result;
 
-        resp = if frame.block_count.to_native() != 1 {
+        result = if frame.block_count.to_native() != 1 {
            VIRTIO_RPMB_RES_GENERAL_FAILURE
         } else {
             match self.backend.program_key(ArrayVec::from(frame.key_mac)) {
@@ -221,7 +223,7 @@ impl VhostUserRpmb {
                 }
             }
         };
-        RequestResponse::Response(VirtIORPMBFrame::result(resp))
+        RequestResponse::Response(VirtIORPMBFrame::result(response, result))
     }
     
     /*
