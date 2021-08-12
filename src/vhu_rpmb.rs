@@ -259,6 +259,7 @@ impl VhostUserRpmb {
         // Iterate over each request and handle it.
         for desc_chain in requests.clone() {
             let descriptors: Vec<_> = desc_chain.clone().collect();
+            let mut consumed = 0;
 
             dbg!(&descriptors);
 
@@ -321,11 +322,12 @@ impl VhostUserRpmb {
                     }
                 };
 
+                // consumed += size_of::<VirtIORPMBFrame>() as u32;
                 println!("Result: {:x?}", &res);
 
                 match res {
                     RequestResponse::Response(frame) => {
-                        let result_buf = descriptors[1];
+                        let result_buf = descriptors[2];
 
                         desc_chain
                             .memory()
@@ -334,14 +336,7 @@ impl VhostUserRpmb {
 
                         size_of::<VirtIORPMBFrame>() as u32;
 
-                        if vring
-                            .mut_queue()
-                            .add_used(desc_chain.head_index(),
-                                      size_of::<VirtIORPMBFrame>() as u32)
-                            .is_err()
-                        {
-                            println!("Couldn't return used descriptors to the ring");
-                        }
+                        consumed += size_of::<VirtIORPMBFrame>() as u32;
                     }
                     // No immediate response, wait for query
                     RequestResponse::PendingResponse{req_resp, result} => {
@@ -353,6 +348,15 @@ impl VhostUserRpmb {
                 };
 
             }
+
+            if vring
+                .mut_queue()
+                .add_used(desc_chain.head_index(), dbg!(consumed))
+                .is_err()
+            {
+                println!("Couldn't return used consumed descriptors to the ring");
+            }
+
 
             // Send notification once all the requests are processed
             vring
