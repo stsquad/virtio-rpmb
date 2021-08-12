@@ -18,3 +18,4 @@ vhost = { git = "https://github.com/rust-vmm/vhost", features = ["vhost-user-sla
 vhost-user-backend = { git = "https://github.com/rust-vmm/vhost-user-backend" }
 virtio-bindings = ">=0.1"
 arrayvec = "0.7.1"
+arr_macro = "0.1.3"

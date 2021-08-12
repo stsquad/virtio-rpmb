@@ -9,6 +9,7 @@ use std::sync::{Arc, RwLock};
 use std::{convert, error, fmt, io};
 use core::fmt::Debug;
 use arrayvec::ArrayVec;
+use arr_macro::arr;
 
 use vhost::vhost_user::message::*;
 use vhost_user_backend::{VhostUserBackend, Vring};
@@ -87,8 +88,9 @@ const NUM_QUEUES: usize = 1;
 #define VIRTIO_RPMB_REQ_DATA_READ          0x0004
 #define VIRTIO_RPMB_REQ_RESULT_READ        0x0005
 */
-pub const VIRTIO_RPMB_REQ_PROGRAM_KEY: u16 = 0x001;
-pub const VIRTIO_RPMB_RESP_PROGRAM_KEY: u16 = 0x100;
+pub const VIRTIO_RPMB_REQ_PROGRAM_KEY:  u16 = 0x0001;
+pub const VIRTIO_RPMB_REQ_RESULT_READ:  u16 = 0x0005;
+pub const VIRTIO_RPMB_RESP_PROGRAM_KEY: u16 = 0x0100;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RequestType {
@@ -115,8 +117,12 @@ pub enum RequestResultType {
 }
 
 #[derive(Debug)]
+struct ResultReqResp(u16, u16);
+
+#[derive(Debug)]
 enum RequestResponse {
     NoResponse,
+    PendingResponse { req_resp: u16, result: u16 },
     Response(VirtIORPMBFrame)
 }
 
@@ -169,9 +175,16 @@ impl Default for VirtIORPMBFrame {
 
 impl Debug for VirtIORPMBFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let res_copy = { self.result };
+        let req_resp_copy = { self.req_resp };
+        let data_sample = &self.data[0 .. 16];
         f.debug_struct("VirtIORPMBFrame")
-         .field("req_resp", &self.req_resp)
-         .finish()
+            .field("key_mac", &self.key_mac)
+            .field("data", &data_sample)
+            .field("nonce", &self.nonce)
+            .field("result", &res_copy)
+            .field("req_resp", &req_resp_copy)
+         .finish_non_exhaustive()
     }
 }
 
@@ -180,11 +193,14 @@ unsafe impl ByteValued for VirtIORPMBFrame {}
 /* Implement some frame builders for sending our results back */
 impl VirtIORPMBFrame {
     fn result(response:u16, result: u16) -> Self {
+        // debug by filling nonce up
+        let mut i = 0u8;
+        let x: [u8; 16] = arr![{i += 1; i}; 16];
         VirtIORPMBFrame {
             stuff: [0; 196],
             key_mac: [0; RPMB_KEY_MAC_SIZE],
             data: [0; RPMB_BLOCK_SIZE],
-            nonce: [0; 16],
+            nonce: x,
             write_counter: From::from(0),
             address: From::from(0),
             block_count: From::from(0),
@@ -208,10 +224,7 @@ impl VhostUserRpmb {
     }
 
     fn program_key(&self, frame: VirtIORPMBFrame) -> RequestResponse {
-        let response = VIRTIO_RPMB_RESP_PROGRAM_KEY;
-        let result;
-
-        result = if frame.block_count.to_native() != 1 {
+        let result = if frame.block_count.to_native() != 1 {
            VIRTIO_RPMB_RES_GENERAL_FAILURE
         } else {
             match self.backend.program_key(ArrayVec::from(frame.key_mac)) {
@@ -223,7 +236,7 @@ impl VhostUserRpmb {
                 }
             }
         };
-        RequestResponse::Response(VirtIORPMBFrame::result(response, result))
+        RequestResponse::PendingResponse{req_resp: VIRTIO_RPMB_RESP_PROGRAM_KEY, result}
     }
     
     /*
@@ -231,6 +244,7 @@ impl VhostUserRpmb {
      */
     fn process_queue(&self, vring: &mut Vring) -> Result<bool> {
         // let mut reqs: Vec<VirtIORPMBFrame> = Vec::new();
+        let mut pending = RequestResponse::NoResponse;
 
         let requests: Vec<_> = vring
             .mut_queue()
@@ -275,50 +289,69 @@ impl VhostUserRpmb {
                 return Err(Error::UnexpectedDescriptorSize);
             }
 
-            /* Convert the descriptor into something we can work
-             * with */
-            let out_hdr = desc_chain
-                .memory()
-                .read_obj::<VirtIORPMBFrame>(desc_out_hdr.addr())
-                .map_err(|_| Error::DescriptorReadFailed)?;
+            for addr in [desc_out_hdr.addr(), desc_buf.addr()] {
+                /* Convert the descriptor into something we can work
+                 * with */
+                let out_hdr = desc_chain
+                    .memory()
+                    .read_obj::<VirtIORPMBFrame>(addr)
+                    .map_err(|_| Error::DescriptorReadFailed)?;
 
-            dbg!(out_hdr);
-            dbg!(out_hdr.req_resp.to_native());
+                println!("Incoming frame: {:x?}/{:x?}",
+                         {out_hdr.req_resp}, &out_hdr.req_resp.to_native());
 
-            let res: RequestResponse = match out_hdr.req_resp.to_native() {
-                VIRTIO_RPMB_REQ_PROGRAM_KEY => {
-                    self.program_key(out_hdr)
-                }
-                _ => {
-                    RequestResponse::NoResponse
-                }
-            };
+                let res: RequestResponse = match out_hdr.req_resp.to_native() {
+                    VIRTIO_RPMB_REQ_PROGRAM_KEY => {
+                        self.program_key(out_hdr)
+                    }
+                    VIRTIO_RPMB_REQ_RESULT_READ => {
+                        match pending {
+                            RequestResponse::PendingResponse{req_resp, result} => {
+                                pending = RequestResponse::NoResponse;
+                                RequestResponse::Response(VirtIORPMBFrame::result(req_resp, result))
+                            }
+                            _ => {
+                                RequestResponse::NoResponse
+                            }
+                        }
+                    }
+                    _ => {
+                        println!("Un-handled req_resp {:x?}", {out_hdr.req_resp});
+                        RequestResponse::NoResponse
+                    }
+                };
 
-            dbg!(&res);
+                println!("Result: {:x?}", &res);
 
-            let len: u32 = match res {
-                RequestResponse::Response(frame) => {
-                    let result_buf = descriptors[1];
+                match res {
+                    RequestResponse::Response(frame) => {
+                        let result_buf = descriptors[1];
 
-                    desc_chain
-                        .memory()
-                        .write_obj::<VirtIORPMBFrame>(frame, result_buf.addr())
-                        .map_err(|_| Error::DescriptorWriteFailed)?;
+                        desc_chain
+                            .memory()
+                            .write_obj::<VirtIORPMBFrame>(frame, result_buf.addr())
+                            .map_err(|_| Error::DescriptorWriteFailed)?;
 
-                    size_of::<VirtIORPMBFrame>() as u32
-                }
-                _ => {
-                    dbg!("no response needed");
-                    0
-                }
-            };
+                        size_of::<VirtIORPMBFrame>() as u32;
 
-            if vring
-                .mut_queue()
-                .add_used(desc_chain.head_index(), len)
-                .is_err()
-            {
-                println!("Couldn't return used descriptors to the ring");
+                        if vring
+                            .mut_queue()
+                            .add_used(desc_chain.head_index(),
+                                      size_of::<VirtIORPMBFrame>() as u32)
+                            .is_err()
+                        {
+                            println!("Couldn't return used descriptors to the ring");
+                        }
+                    }
+                    // No immediate response, wait for query
+                    RequestResponse::PendingResponse{req_resp, result} => {
+                        pending = RequestResponse::PendingResponse{req_resp, result};
+                    }
+                    _ => {
+                        dbg!("no response needed");
+                    }
+                };
+
             }
 
             // Send notification once all the requests are processed

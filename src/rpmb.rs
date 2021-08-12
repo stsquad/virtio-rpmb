@@ -13,6 +13,7 @@ use std::convert::TryFrom;
 use std::sync::RwLock;
 use memmap::{MmapMut, MmapOptions};
 use arrayvec::ArrayVec;
+use core::fmt::Debug;
 
 const KB: u64 = 1024;
 const UNIT_128KB: u64 = KB * 128;
@@ -27,6 +28,7 @@ enum Key {
     Programmed(ArrayVec::<u8, RPMB_KEY_MAC_SIZE>)
 }
 
+#[derive(Debug)]
 pub enum KeyError {
     ProgramFailed
 }
@@ -105,6 +107,6 @@ impl RpmbBackend {
 
     pub fn program_key(&self, key: ArrayVec<u8, RPMB_KEY_MAC_SIZE>) -> std::result::Result<(), KeyError> {
         let result =  self.state.write().unwrap().program_key(key);
-        return result;
+        return dbg!(result);
     }
 }
