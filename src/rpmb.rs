@@ -53,10 +53,10 @@ impl RpmbMutableState {
 
     pub fn program_key(&mut self, key: ArrayVec<u8, RPMB_KEY_MAC_SIZE>) -> std::result::Result<(), KeyError> {
         if let Key::Empty = self.key {
-            Err(KeyError::ProgramFailed)
-        } else {
             self.key = Key::Programmed(key);
             Ok(())
+        } else {
+            Err(KeyError::ProgramFailed)
         }
     }
 }
