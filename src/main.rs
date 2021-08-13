@@ -9,7 +9,7 @@
 extern crate clap;
 use clap::App;
 
-use log::{error};
+use log::*;
 
 use std::process::exit;
 use std::path::Path;
@@ -30,6 +30,12 @@ fn main() -> Result<(), String> {
         println!("}}");
         exit(0);
     }
+
+    stderrlog::new().module(module_path!())
+        .verbosity(cmd_args.occurrences_of("verbose") as usize)
+        .timestamp(stderrlog::Timestamp::Second)
+        .init()
+        .unwrap();
 
     let flash_path = Path::new(cmd_args.value_of("flash_path").unwrap());
     if !flash_path.exists() {
