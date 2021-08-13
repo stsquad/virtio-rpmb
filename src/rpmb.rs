@@ -22,7 +22,7 @@ const MAX_RPMB_SIZE: u64 = UNIT_128KB * 128;
 pub const RPMB_KEY_MAC_SIZE: usize = 32;
 pub const RPMB_BLOCK_SIZE: usize = 256;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Key {
     Empty,
     Programmed(ArrayVec::<u8, RPMB_KEY_MAC_SIZE>)
@@ -30,7 +30,8 @@ enum Key {
 
 #[derive(Debug)]
 pub enum KeyError {
-    ProgramFailed
+    ProgramFailed,
+    NoKey
 }
 
 /*
@@ -105,8 +106,21 @@ impl RpmbBackend {
         self.capacity
     }
 
+    pub fn get_write_count(&self) -> u32 {
+        self.state.read().unwrap().write_count
+    }
+
     pub fn program_key(&self, key: ArrayVec<u8, RPMB_KEY_MAC_SIZE>) -> std::result::Result<(), KeyError> {
         let result =  self.state.write().unwrap().program_key(key);
         return result;
+    }
+
+    pub fn get_key(&self) -> std::result::Result
+        <ArrayVec<u8, RPMB_KEY_MAC_SIZE>, KeyError> {
+            let key = self.state.read().unwrap().key.clone();
+            match key {
+                Key::Empty => { Err(KeyError::NoKey) }
+                Key::Programmed(k) => { Ok(k)}
+            }
     }
 }

@@ -20,13 +20,15 @@ use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
 use vm_memory::{Be16, Be32, Bytes, ByteValued, GuestMemoryAtomic, GuestMemoryMmap};
-//use vm_virtio::Queue;
-//use vmm_sys_util::eventfd::EventFd;
 
 use crate::rpmb::RpmbBackend;
 
 type Result<T> = std::result::Result<T, Error>;
 type VhostUserBackendResult<T> = std::result::Result<T, std::io::Error>;
+
+use sha2::Sha256;
+use hmac::{Hmac, NewMac};
+type HmacSha256 = Hmac<sha2::Sha256>;
 
 #[derive(Debug)]
 /// Errors related to vhost-user-rpmb daemon.
@@ -89,8 +91,11 @@ const NUM_QUEUES: usize = 1;
 #define VIRTIO_RPMB_REQ_RESULT_READ        0x0005
 */
 pub const VIRTIO_RPMB_REQ_PROGRAM_KEY:  u16 = 0x0001;
+pub const VIRTIO_RPMB_REQ_GET_WRITE_COUNTER: u16 = 0x0002;
 pub const VIRTIO_RPMB_REQ_RESULT_READ:  u16 = 0x0005;
+
 pub const VIRTIO_RPMB_RESP_PROGRAM_KEY: u16 = 0x0100;
+pub const VIRTIO_RPMB_RESP_GET_COUNTER: u16 = 0x0200;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RequestType {
@@ -110,6 +115,7 @@ pub enum RequestType {
 pub const VIRTIO_RPMB_RES_OK: u16 = 0x0000;
 pub const VIRTIO_RPMB_RES_GENERAL_FAILURE: u16 = 0x0001;
 pub const VIRTIO_RPMB_RES_WRITE_FAILURE: u16 = 0x0005;
+pub const VIRTIO_RPMB_RES_NO_AUTH_KEY: u16 = 0x0007;
 
 pub enum RequestResultType {
     Ok,
@@ -126,16 +132,6 @@ enum RequestResponse {
     Response(VirtIORPMBFrame)
 }
 
-// pub fn request_type(
-//     mem: &GuestMemoryMmap,
-//     desc_addr: GuestAddress,
-// ) -> Result<RequestType, Error> {
-//     let type_ = mem.read_obj(desc_addr).map_err(Error::GuestMemory)?;
-//     match type_ {
-//         VIRTIO_RPMB_REQ_PROGRAM_KEY => Ok(RequestType::ProgramKey),
-//         t => Ok(RequestType::Unsupported(t)),
-//     }
-// }
 
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
@@ -192,7 +188,7 @@ unsafe impl ByteValued for VirtIORPMBFrame {}
 
 /* Implement some frame builders for sending our results back */
 impl VirtIORPMBFrame {
-    fn result(response:u16, result: u16) -> Self {
+    fn result(req_resp:u16, result: u16) -> Self {
         VirtIORPMBFrame {
             stuff: [0; 196],
             key_mac: [0; RPMB_KEY_MAC_SIZE],
@@ -202,8 +198,27 @@ impl VirtIORPMBFrame {
             address: From::from(0),
             block_count: From::from(0),
             result: From::from(result),
-            req_resp: From::from(response)
-        }
+            req_resp: From::from(req_resp)
+         }
+    }
+
+    fn calculate_mac(&mut self, mut mac: Hmac<Sha256>) -> VirtIORPMBFrame {
+        use hmac::Mac;
+        // const len: usize = size_of::<VirtIORPMBFrame>() - 196 - RPMB_KEY_MAC_SIZE;
+        // let data: [u8; len] = bytemuck::cast(self.data[0]);
+        mac.update(&self.data);
+        mac.update(&self.nonce);
+        // we have to grab the remaining fields using as_slice() to
+        // get the raw bytes in order.
+        mac.update(self.write_counter.as_slice());
+        mac.update(&self.address.as_slice());
+        mac.update(&self.block_count.as_slice());
+        mac.update(&self.result.as_slice());
+        mac.update(&self.req_resp.as_slice());
+
+        let result = mac.finalize().into_bytes();
+        self.key_mac = result.into();
+        *self
     }
 }
 
@@ -234,6 +249,37 @@ impl VhostUserRpmb {
             }
         };
         RequestResponse::PendingResponse{req_resp: VIRTIO_RPMB_RESP_PROGRAM_KEY, result}
+    }
+
+    /*
+     * Run the checks from:
+     * 5.12.6.1.2 Device Requirements: Device Operation: Get Write Counter
+     */
+    fn get_write_counter(&self, frame: VirtIORPMBFrame) -> RequestResponse {
+        let req_resp = VIRTIO_RPMB_RESP_GET_COUNTER;
+        let key = self.backend.get_key();
+
+        if key.is_err() {
+            warn!("no key programmed: {:?}", key);
+            return
+                RequestResponse::Response(
+                    VirtIORPMBFrame::result(req_resp, VIRTIO_RPMB_RES_NO_AUTH_KEY));
+        } else if frame.block_count.to_native() > 1 {  /* allow 0 (NONCONF) */
+                                                          warn!("invalid
+            block count {}", frame.block_count.to_native());
+            return
+                RequestResponse::Response(
+                    VirtIORPMBFrame::result(req_resp, VIRTIO_RPMB_RES_GENERAL_FAILURE));
+        }
+
+        /* A proper response needs a frame with calculated MAC */
+        let mut resp = VirtIORPMBFrame::result(req_resp, VIRTIO_RPMB_RES_OK);
+        resp.write_counter = From::from(self.backend.get_write_count());
+        resp.nonce = frame.nonce;
+        let mut mac = HmacSha256::new_from_slice(&key.unwrap())
+            .expect("HMAC can take key of any size");
+
+        RequestResponse::Response(resp.calculate_mac(mac))
     }
     
     /*
@@ -295,6 +341,9 @@ impl VhostUserRpmb {
                 let res: RequestResponse = match req_resp {
                     VIRTIO_RPMB_REQ_PROGRAM_KEY => {
                         self.program_key(frame)
+                    }
+                    VIRTIO_RPMB_REQ_GET_WRITE_COUNTER => {
+                        self.get_write_counter(frame)
                     }
                     VIRTIO_RPMB_REQ_RESULT_READ => {
                         match pending {
@@ -421,7 +470,7 @@ impl VhostUserBackend for VhostUserRpmb {
 
     fn update_memory(
         &mut self,
-        mem: GuestMemoryAtomic<GuestMemoryMmap>,
+        _mem: GuestMemoryAtomic<GuestMemoryMmap>,
     ) -> VhostUserBackendResult<()> {
         Ok(())
     }
