@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 use std::{convert, error, fmt, io};
 use core::fmt::Debug;
 use arrayvec::ArrayVec;
-use arr_macro::arr;
+use log::{info, trace, warn, error};
 
 use vhost::vhost_user::message::*;
 use vhost_user_backend::{VhostUserBackend, Vring};
@@ -193,14 +193,11 @@ unsafe impl ByteValued for VirtIORPMBFrame {}
 /* Implement some frame builders for sending our results back */
 impl VirtIORPMBFrame {
     fn result(response:u16, result: u16) -> Self {
-        // debug by filling nonce up
-        let mut i = 0u8;
-        let x: [u8; 16] = arr![{i += 1; i}; 16];
         VirtIORPMBFrame {
             stuff: [0; 196],
             key_mac: [0; RPMB_KEY_MAC_SIZE],
             data: [0; RPMB_BLOCK_SIZE],
-            nonce: x,
+            nonce: [0; 16],
             write_counter: From::from(0),
             address: From::from(0),
             block_count: From::from(0),
@@ -256,54 +253,48 @@ impl VhostUserRpmb {
             return Ok(true);
         }
 
-        // Iterate over each request and handle it.
+        /*
+         * Iterate over the requests and handle the messages.
+         * Generally we expect at least two descriptors, the request
+         * itself and the descriptors for the response. The other form
+         * is a request followed by a request for a result and then
+         * the buffer for the reply.
+         */
         for desc_chain in requests.clone() {
-            let descriptors: Vec<_> = desc_chain.clone().collect();
+            let buffers: Vec<_> = desc_chain.clone().collect();
             let mut consumed = 0;
 
-            dbg!(&descriptors);
+            trace!("Buffers: {:x?}", &buffers);
 
-            if descriptors.len() != 3 {
+            if buffers.len() < 2 {
                 return Err(Error::UnexpectedDescriptorCount);
             }
 
-            let desc_out_hdr = descriptors[0];
-            if desc_out_hdr.is_write_only() {
-                return Err(Error::UnexpectedWriteOnlyDescriptor);
-            }
+            let (writeable, readable): (Vec<_>, Vec<_>) = buffers.into_iter().partition(|b| b.is_write_only());
 
-            if desc_out_hdr.len() as usize != size_of::<VirtIORPMBFrame>() {
-                return Err(Error::UnexpectedDescriptorSize);
-            }
+            /* Process the incoming frames */
+            for b in &readable {
 
-            let desc_buf = descriptors[1];
-            if desc_buf.len() == 0 {
-                return Err(Error::UnexpectedDescriptorSize);
-            }
+                /* All frames should be the same size */
+                if b.len() as usize != size_of::<VirtIORPMBFrame>() {
+                    error!("Unexpected frame size: {}", b.len());
+                    return Err(Error::UnexpectedDescriptorSize);
+                }
 
-            let desc_in_hdr = descriptors[2];
-            if !desc_in_hdr.is_write_only() {
-                return Err(Error::UnexpectedReadDescriptor);
-            }
-
-            if desc_in_hdr.len() as usize != size_of::<VirtIORPMBFrame>() {
-                return Err(Error::UnexpectedDescriptorSize);
-            }
-
-            for addr in [desc_out_hdr.addr(), desc_buf.addr()] {
-                /* Convert the descriptor into something we can work
-                 * with */
-                let out_hdr = desc_chain
+                /* Convert the descriptor into something we can work with */
+                let frame = desc_chain
                     .memory()
-                    .read_obj::<VirtIORPMBFrame>(addr)
+                    .read_obj::<VirtIORPMBFrame>(b.addr())
                     .map_err(|_| Error::DescriptorReadFailed)?;
 
-                println!("Incoming frame: {:x?}/{:x?}",
-                         {out_hdr.req_resp}, &out_hdr.req_resp.to_native());
 
-                let res: RequestResponse = match out_hdr.req_resp.to_native() {
+                let req_resp = frame.req_resp.to_native();
+                trace!("Incoming frame: {:x?} => req_resp {:x?}", frame, req_resp);
+
+                /* Dispatch request frames to their handlers */
+                let res: RequestResponse = match req_resp {
                     VIRTIO_RPMB_REQ_PROGRAM_KEY => {
-                        self.program_key(out_hdr)
+                        self.program_key(frame)
                     }
                     VIRTIO_RPMB_REQ_RESULT_READ => {
                         match pending {
@@ -317,44 +308,54 @@ impl VhostUserRpmb {
                         }
                     }
                     _ => {
-                        println!("Un-handled req_resp {:x?}", {out_hdr.req_resp});
+                        warn!("Un-handled req_resp {:x?}", req_resp);
                         RequestResponse::NoResponse
                     }
                 };
 
-                // consumed += size_of::<VirtIORPMBFrame>() as u32;
-                println!("Result: {:x?}", &res);
+                trace!("Result: {:x?}", &res);
 
-                match res {
+                /*
+                 * After we have handled the frame we either have a
+                 * response to send, a deferred status that might be
+                 * queried later or nothing to send at all.
+                 */
+
+                let replied_bytes = match res {
                     RequestResponse::Response(frame) => {
-                        let result_buf = descriptors[2];
+
+                        // we really should take one
+                        let result_buf = writeable[0];
 
                         desc_chain
                             .memory()
                             .write_obj::<VirtIORPMBFrame>(frame, result_buf.addr())
                             .map_err(|_| Error::DescriptorWriteFailed)?;
 
-                        size_of::<VirtIORPMBFrame>() as u32;
-
-                        consumed += size_of::<VirtIORPMBFrame>() as u32;
+                        size_of::<VirtIORPMBFrame>() as u32
                     }
                     // No immediate response, wait for query
                     RequestResponse::PendingResponse{req_resp, result} => {
-                        pending = RequestResponse::PendingResponse{req_resp, result};
+                        pending = RequestResponse::PendingResponse{req_resp,
+                                                             result};
+                        0
                     }
                     _ => {
-                        dbg!("no response needed");
+                        info!("no response needed");
+                        0
                     }
                 };
 
-            }
+                consumed += replied_bytes;
+
+            } // for each readable frame
 
             if vring
                 .mut_queue()
-                .add_used(desc_chain.head_index(), dbg!(consumed))
+                .add_used(desc_chain.head_index(), consumed)
                 .is_err()
             {
-                println!("Couldn't return used consumed descriptors to the ring");
+                warn!("Couldn't return used consumed descriptors to the ring");
             }
 
 
@@ -388,8 +389,8 @@ impl VhostUserBackend for VhostUserRpmb {
             | 1 << VIRTIO_RING_F_INDIRECT_DESC
             | 1 << VIRTIO_RING_F_EVENT_IDX
             | VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits();
-        dbg!(format!("{:#018x}", &feat));
-        dbg!(format!("{:#018x}", VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits()));
+        info!("{:#018x}", &feat);
+        info!("{:#018x}", VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits());
         feat
     }
 
@@ -399,13 +400,13 @@ impl VhostUserBackend for VhostUserRpmb {
             | VhostUserProtocolFeatures::RESET_DEVICE
             | VhostUserProtocolFeatures::STATUS
             | VhostUserProtocolFeatures::MQ;
-        dbg!(pfeat);
+        info!("protocol features: {:?}", pfeat);
         pfeat
     }
 
     fn get_config(&self, _offset: u32, _size: u32) -> Vec<u8> {
         let config: Vec<u8> = vec![self.backend.get_capacity(), 1, 1];
-        dbg!(&config);
+        info!("{:?}", &config);
         config
     }
 
@@ -422,7 +423,6 @@ impl VhostUserBackend for VhostUserRpmb {
         &mut self,
         mem: GuestMemoryAtomic<GuestMemoryMmap>,
     ) -> VhostUserBackendResult<()> {
-        dbg!(self.mem = Some(mem));
         Ok(())
     }
 
@@ -433,8 +433,8 @@ impl VhostUserBackend for VhostUserRpmb {
         vrings: &[Arc<RwLock<Vring>>],
         _thread_id: usize,
     ) -> VhostUserBackendResult<bool> {
-        dbg!(device_event);
-        dbg!(evset);
+        trace!("{}", device_event);
+        trace!("{:?}", evset);
 
         if evset != epoll::Events::EPOLLIN {
             return Err(Error::HandleEventNotEpollIn.into());
@@ -463,7 +463,7 @@ impl VhostUserBackend for VhostUserRpmb {
                 }
             }
             _ => {
-                dbg!("unhandled device_event:", device_event);
+                warn!("unhandled device_event: {}", device_event);
                 return Err(Error::HandleEventUnknownEvent.into());
             }
         }

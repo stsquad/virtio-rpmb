@@ -107,6 +107,6 @@ impl RpmbBackend {
 
     pub fn program_key(&self, key: ArrayVec<u8, RPMB_KEY_MAC_SIZE>) -> std::result::Result<(), KeyError> {
         let result =  self.state.write().unwrap().program_key(key);
-        return dbg!(result);
+        return result;
     }
 }
